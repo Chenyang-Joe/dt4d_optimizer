@@ -55,7 +55,8 @@ def _fit_frame(
 
 def fit_sequence(
     rig:       Rig,
-    verts_seq: np.ndarray,   # (T, V, 3) float32
+    verts_seq: np.ndarray,   # (T, V, 3) float32 — target mesh sequence
+    v0:        np.ndarray,   # (V, 3)    float32 — rest-pose vertices the rig was built from
     n_iters:   int   = 500,
     lr:        float = 1e-2,
     device:    str   = 'cuda',
@@ -64,30 +65,36 @@ def fit_sequence(
     """
     Fit the rig to every frame of verts_seq using FK + LBS + Adam.
 
-    Frame 0 is the rest pose and is returned unchanged.
-    Frames 1..T-1 are fitted with warm-starting from the previous frame.
-    Returns a (T, V, 3) float32 array.
+    v0 is the rest-pose mesh the rig was built from (kept separate from rig.npz).
+    All T frames are fitted. Returns a (T, V, 3) float32 array.
     """
     T, V, _ = verts_seq.shape
 
-    joints = torch.tensor(rig.joints,   device=device)
-    W      = torch.tensor(rig.weights,  device=device)
-    v0     = torch.tensor(verts_seq[0], device=device)
+    joints  = torch.tensor(rig.joints,  device=device)
+    W       = torch.tensor(rig.weights, device=device)
+    v0_t    = torch.tensor(v0,          device=device)
 
-    out    = np.zeros((T, V, 3), dtype=np.float32)
-    out[0] = verts_seq[0]
-
+    out     = np.zeros((T, V, 3), dtype=np.float32)
     prev_aa = None
     prev_rt = None
 
-    frames = range(1, T)
+    # if frame 0 is identical to the rest pose, skip fitting and copy directly
+    frame0_is_rest = (verts_seq[0] is v0) or np.array_equal(verts_seq[0], v0)
+    start = 0
+    if frame0_is_rest:
+        out[0] = v0
+        start  = 1
+        if verbose:
+            print('frame 0 == rest pose, skipping fit')
+
+    frames = range(start, T)
     if verbose:
         frames = tqdm(frames, desc='fitting frames')
 
     for t in frames:
         target = torch.tensor(verts_seq[t], device=device)
         best_verts, prev_aa, prev_rt = _fit_frame(
-            v0, W, joints, rig.parents, target,
+            v0_t, W, joints, rig.parents, target,
             n_iters, lr, prev_aa, prev_rt,
         )
         out[t] = best_verts
